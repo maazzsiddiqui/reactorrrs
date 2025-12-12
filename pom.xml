@@ -13,7 +13,7 @@
 
 		<akka-version>2.3.2</akka-version>
 		<codec-version>1.9</codec-version>
-		<es-version>5.6.15</es-version>
+		<es-version>7.17.25</es-version>
 		<groovy-version>2.1.8</groovy-version>
 		<guava-version>15.0</guava-version>
 		<guice-version>3.0</guice-version>
@@ -269,5 +269,25 @@
 			<artifactId>jedis</artifactId>
 			<version>2.6.2</version>
 		</dependency>
-	</dependencies>
+		<dependency>
+		<groupId>org.yaml</groupId>
+		<artifactId>snakeyaml</artifactId>
+		<version>2.0</version>
+	</dependency>
+	<dependency>
+		<groupId>com.fasterxml.jackson.dataformat</groupId>
+		<artifactId>jackson-dataformat-cbor</artifactId>
+		<version>2.11.4</version>
+	</dependency>
+	<dependency>
+		<groupId>org.yaml</groupId>
+		<artifactId>snakeyaml</artifactId>
+		<version>2.0</version>
+	</dependency>
+	<dependency>
+		<groupId>com.fasterxml.jackson.dataformat</groupId>
+		<artifactId>jackson-dataformat-cbor</artifactId>
+		<version>2.11.4</version>
+	</dependency>
+</dependencies>
 </project>
