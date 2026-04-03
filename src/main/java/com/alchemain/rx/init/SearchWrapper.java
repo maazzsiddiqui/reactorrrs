@@ -2,16 +2,14 @@ package com.alchemain.rx.init;
 
 import java.util.Iterator;
 
-import org.elasticsearch.action.delete.DeleteResponse;
-import org.elasticsearch.action.index.IndexResponse;
-import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.client.Client;
-import org.elasticsearch.xcontent.XContentType;
-import org.elasticsearch.index.query.QueryBuilder;
-import org.elasticsearch.index.query.QueryBuilders;
-import org.elasticsearch.action.DocWriteResponse;
-import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.search.sort.SortOrder;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch.core.DeleteResponse;
+import co.elastic.clients.elasticsearch.core.IndexResponse;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.elasticsearch.core.search.TotalHits;
+import co.elastic.clients.elasticsearch.core.search.TotalHitsRelation;
+import co.elastic.clients.json.JsonData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,34 +24,38 @@ import com.alchemain.rx.bus.JsonProvider;
 public class SearchWrapper implements Constants {
     private final Logger log = LoggerFactory.getLogger(this.getClass());
 
-    private Client searchClient;
+    private ElasticsearchClient searchClient;
 
     @Inject
-    public SearchWrapper(Client searchClient) {
+    public SearchWrapper(ElasticsearchClient searchClient) {
         this.searchClient = searchClient;
     }
 
     public String indexObject(ExecutionContext context, String resource, String _id, JsonNode data) throws Exception {
 
-        // The ES Java API doesn't take a JSON node directly, so we have to
-        // stringify it.
-        String dataAsString = JsonProvider.INSTANCE.getMapper().writeValueAsString(data);
+        // Convert JsonNode to JsonData
+        JsonData jsonData = JsonData.fromJson(JsonProvider.INSTANCE.getMapper().writeValueAsString(data));
 
-        IndexResponse response = searchClient.prepareIndex(context.getTenant(), resource, _id).setSource(dataAsString, XContentType.JSON)
-
-                        .execute().actionGet();
-        return response.getId();
+        IndexResponse response = searchClient.index(i -> i
+            .index(context.getTenant())
+            .id(_id)
+            .document(jsonData)
+        );
+        return response.id();
     }
 
     public Boolean deleteObject(ExecutionContext context, String resource, String _id) throws Exception {
 
-        DeleteResponse response = searchClient.prepareDelete(context.getTenant(), resource, _id).execute().actionGet();
-        return response.getResult() == DocWriteResponse.Result.DELETED;
+        DeleteResponse response = searchClient.delete(d -> d
+            .index(context.getTenant())
+            .id(_id)
+        );
+        return response.result().jsonValue().equals("deleted");
     }
 
     public JsonNode executeStringQuery(ExecutionContext context, JsonNode requestData) throws Exception {
 
-        SearchResponse response = null;
+        SearchResponse<JsonData> response = null;
 
         int offset = requestData.path(PAGING).get(OFFSET).asInt();
         int limit = requestData.path(PAGING).get(LIMIT).asInt();
@@ -64,19 +66,46 @@ public class SearchWrapper implements Constants {
             resource = requestData.path(DATA).get(RESOURCE).asText();
         }
 
-        QueryBuilder queryBuilder = QueryBuilders.queryStringQuery(query);
-
         if (resource != null) {
             log.debug("Executing search query [{}] on tenant [{}] using type [{}]", query, context.getTenant(),
                     resource);
-            response = searchClient.prepareSearch(context.getTenant())
-                                .setQuery(queryBuilder).addSort(DISPLAY_NAME, SortOrder.ASC)
-                                .setFrom(offset).setSize(limit).execute().actionGet();
+            response = searchClient.search(s -> s
+                .index(context.getTenant())
+                .query(q -> q
+                    .queryString(qs -> qs
+                        .query(query)
+                    )
+                )
+                .sort(so -> so
+                    .field(f -> f
+                        .field(DISPLAY_NAME)
+                        .order(co.elastic.clients.elasticsearch._types.SortOrder.Asc)
+                    )
+                )
+                .from(offset)
+                .size(limit),
+                JsonData.class
+            );
         } else {
             log.debug("Executing search query [{}] on tenant [{}] with no specified type", query,
                     context.getTenant());
-            response = searchClient.prepareSearch(context.getTenant()).setQuery(queryBuilder)
-                    .addSort(DISPLAY_NAME, SortOrder.ASC).setFrom(offset).setSize(limit).execute().actionGet();
+            response = searchClient.search(s -> s
+                .index(context.getTenant())
+                .query(q -> q
+                    .queryString(qs -> qs
+                        .query(query)
+                    )
+                )
+                .sort(so -> so
+                    .field(f -> f
+                        .field(DISPLAY_NAME)
+                        .order(co.elastic.clients.elasticsearch._types.SortOrder.Asc)
+                    )
+                )
+                .from(offset)
+                .size(limit),
+                JsonData.class
+            );
         }
 
         return generatePagedResponse(response, offset, limit);
@@ -92,42 +121,66 @@ public class SearchWrapper implements Constants {
     public JsonNode executeMatchQuery(ExecutionContext context, String resource, String field, String query)
             throws Exception {
 
-        SearchResponse response = null;
+        SearchResponse<JsonData> response = null;
         if (resource != null) {
-            response = searchClient.prepareSearch(context.getTenant())
-                                .setQuery(QueryBuilders.matchQuery(field, query)).execute().actionGet();
+            response = searchClient.search(s -> s
+                .index(context.getTenant())
+                .query(q -> q
+                    .match(m -> m
+                        .field(field)
+                        .query(query)
+                    )
+                ),
+                JsonData.class
+            );
         } else {
-            response = searchClient.prepareSearch(context.getTenant()).setQuery(QueryBuilders.matchQuery(field, query))
-                    .execute().actionGet();
+            response = searchClient.search(s -> s
+                .index(context.getTenant())
+                .query(q -> q
+                    .match(m -> m
+                        .field(field)
+                        .query(query)
+                    )
+                ),
+                JsonData.class
+            );
         }
 
-        if (response.getHits().getTotalHits().value != 1) {
+        TotalHits total = response.hits().total();
+        if (total != null && total.value() != 1) {
             throw new Exception(String.format("Multiple matches found for an exact match query! field: %s, query: %s",
                     field, query));
         }
 
-        Iterator<SearchHit> hit_it = response.getHits().iterator();
+        Iterator<Hit<JsonData>> hit_it = response.hits().hits().iterator();
         if (hit_it.hasNext()) {
-            SearchHit hit = hit_it.next();
-            return JsonProvider.INSTANCE.getMapper().readTree(hit.getSourceAsString());
+            Hit<JsonData> hit = hit_it.next();
+            return JsonProvider.INSTANCE.getMapper().readTree(hit.source().toString());
         } else {
             return JsonProvider.INSTANCE.getMapper().createObjectNode();
         }
     }
 
-    private ObjectNode generatePagedResponse(SearchResponse matches, int offset, int limit) throws Exception {
+    private ObjectNode generatePagedResponse(SearchResponse<JsonData> matches, int offset, int limit) throws Exception {
 
         ObjectNode pagedResponse = JsonProvider.INSTANCE.getMapper().createObjectNode();
         ObjectNode pagingInfo = pagedResponse.putObject(PAGING);
         pagingInfo.put(OFFSET, offset);
         pagingInfo.put(LIMIT, limit);
-        pagingInfo.put(TOTAL_COUNT, matches.getHits().getTotalHits().value);
+        
+        TotalHits total = matches.hits().total();
+        if (total != null) {
+            pagingInfo.put(TOTAL_COUNT, total.value());
+        } else {
+            pagingInfo.put(TOTAL_COUNT, 0);
+        }
+        
         ArrayNode responseData = pagedResponse.putArray(DATA);
 
-        Iterator<SearchHit> hit_it = matches.getHits().iterator();
+        Iterator<Hit<JsonData>> hit_it = matches.hits().hits().iterator();
         while (hit_it.hasNext()) {
-            SearchHit hit = hit_it.next();
-            responseData.add(JsonProvider.INSTANCE.getMapper().readTree(hit.getSourceAsString()));
+            Hit<JsonData> hit = hit_it.next();
+            responseData.add(JsonProvider.INSTANCE.getMapper().readTree(hit.source().toString()));
         }
 
         pagingInfo.put(COUNT, responseData.size());
