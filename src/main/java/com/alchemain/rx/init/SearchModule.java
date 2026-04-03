@@ -3,11 +3,13 @@ package com.alchemain.rx.init;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 
-import org.elasticsearch.client.Client;
-import org.elasticsearch.client.transport.TransportClient;
-import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.TransportAddress;
-import org.elasticsearch.transport.client.PreBuiltTransportClient;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.transport.ElasticsearchTransport;
+import co.elastic.clients.transport.rest_client.RestClientTransport;
+import org.apache.http.HttpHost;
+import org.elasticsearch.client.RestClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,11 +27,11 @@ public class SearchModule extends AbstractModule {
 
     @Override
     protected void configure() {
-        bind(Client.class).toInstance(esConnect());
+        bind(ElasticsearchClient.class).toInstance(esConnect());
         bind(SearchWrapper.class).in(Scopes.SINGLETON);
     }
 
-    public Client esConnect() {
+    public ElasticsearchClient esConnect() {
         String transportMethod = PropertiesUtil.string(CLIENT_METHOD);
         String clusterName = PropertiesUtil.string(CLUSTER_NAME);
         if (clusterName == null)
@@ -38,17 +40,30 @@ public class SearchModule extends AbstractModule {
         log.trace("Creating ES Client:  cluster = {}, transport = {}", clusterName, transportMethod);
 
         String[] hosts = PropertiesUtil.string(CLIENT_HOSTS).split(",");
-        Settings settings = Settings.builder().put("cluster.name", clusterName).build();
-        TransportClient client = new PreBuiltTransportClient(settings);
-        for (String host : hosts) {
-            String[] constituents = host.split(":");
+        
+        // Create the low-level client
+        HttpHost[] httpHosts = new HttpHost[hosts.length];
+        for (int i = 0; i < hosts.length; i++) {
+            String[] constituents = hosts[i].split(":");
             try {
-                client.addTransportAddress(new TransportAddress(InetAddress.getByName(constituents[0]), Integer.parseInt(constituents[1])));
-            } catch (UnknownHostException e) {
-                log.error("Failed to add transport address: {}", e.getMessage());
+                httpHosts[i] = new HttpHost(constituents[0], Integer.parseInt(constituents[1]), "http");
+            } catch (Exception e) {
+                log.error("Failed to parse host address: {}", e.getMessage());
+                httpHosts[i] = new HttpHost("localhost", 9200, "http");
             }
         }
-        return client;
+        
+        RestClient restClient = RestClient.builder(httpHosts).build();
+        
+        // Create the transport with a Jackson mapper
+        ObjectMapper mapper = JsonMapper.builder().build();
+        ElasticsearchTransport transport = new RestClientTransport(
+            restClient,
+            new co.elastic.clients.json.jackson.JacksonJsonpMapper(mapper)
+        );
+        
+        // Create the API client
+        return new ElasticsearchClient(transport);
     }
 }
 
